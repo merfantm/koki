@@ -1,8 +1,0 @@
-flask
-requests
-Pillow
-numpy
-gunicorn
-arabic-reshaper
-python-bidi
-openpyxl
