@@ -465,7 +465,7 @@ def start_contact_us(chat_id):
     send_message(
         chat_id,
         "🎁 <b>دریافت اکانت رایگان</b>\n\n"
-        "جهت دریافت اکانت گزینه دریافت امانت را انتخاب کنید",
+        "جهت دریافت اکانت گزینه دریافت اکانت را انتخاب کنید",
         keyboard=contact_request_keyboard(),
     )
 
