@@ -58,6 +58,7 @@ MENU_CONTACT = "🎁 دریافت اکانت رایگان"
 MENU_REMIX = "🎵 Remix Tm"
 MENU_PETTY_CASH = "💵 ثبت تنخواه"
 MENU_WORD_TO_PDF = "📄 ورد به PDF"
+MENU_PDF_TO_WORD = "📝 PDF به Word"
 
 DONE_BTN = "✅ تمام شد"
 CANCEL_BTN = "❌ لغو و بازگشت به منو"
@@ -302,6 +303,7 @@ def main_menu_keyboard():
             [{"text": MENU_PHOTO}, {"text": MENU_RECEIPT}],
             [{"text": MENU_CONTACT}, {"text": MENU_REMIX}],
             [{"text": MENU_PETTY_CASH}, {"text": MENU_WORD_TO_PDF}],
+            [{"text": MENU_PDF_TO_WORD}],
         ],
         "resize_keyboard": True,
     }
@@ -335,7 +337,7 @@ def send_main_menu(chat_id, text="✨ یه گزینه رو از منو انتخ�
 WELCOME_TEXT = (
     "👋 <b>سلام!</b>\n\n"
     "از منوی پایین صفحه یکی از گزینه‌ها رو انتخاب کن:\n"
-    f"{MENU_PHOTO}\n{MENU_RECEIPT}\n{MENU_CONTACT}\n{MENU_REMIX}\n{MENU_PETTY_CASH}\n{MENU_WORD_TO_PDF}"
+    f"{MENU_PHOTO}\n{MENU_RECEIPT}\n{MENU_CONTACT}\n{MENU_REMIX}\n{MENU_PETTY_CASH}\n{MENU_WORD_TO_PDF}\n{MENU_PDF_TO_WORD}"
 )
 
 
@@ -794,6 +796,241 @@ def handle_word_document(chat_id, message):
     send_main_menu(chat_id, "🎉 تموم شد! کار دیگه‌ای هم مونده؟")
 
 
+# ------------------ قابلیت: تبدیل PDF فارسی به Word ------------------
+
+def start_pdf_to_word(chat_id):
+    state = get_state(chat_id)
+    state["mode"] = "pdf_to_word"
+    send_message(
+        chat_id,
+        "📝 <b>تبدیل PDF فارسی به Word</b>\n\n"
+        "فایل PDF فارسی‌ات رو بفرست.\n\n"
+        "✅ متن و پاراگراف‌های فارسی حفظ می‌شن\n"
+        "✅ جداول حفظ می‌شن\n"
+        "✅ هدرها و فوترها حفظ می‌شن\n"
+        "✅ فونت B Nazanin اعمال می‌شه\n\n"
+        "⚠️ حداکثر حجم فایل: ۵۰ مگابایت",
+        keyboard=cancel_only_keyboard(),
+    )
+
+
+def handle_pdf_to_word(chat_id, message):
+    document = message.get("document", {})
+    file_name = document.get("file_name", "") or "file.pdf"
+    mime_type = document.get("mime_type", "")
+
+    # بررسی نوع فایل
+    if mime_type != "application/pdf" and not file_name.lower().endswith(".pdf"):
+        send_message(chat_id, "❌ فقط فایل PDF قبول می‌کنم.")
+        return
+
+    # بررسی حجم
+    file_size = document.get("file_size", 0)
+    if file_size and file_size > 50 * 1024 * 1024:
+        send_message(chat_id, "❌ حجم فایل بیشتر از ۵۰ مگابایت است.")
+        reset_state(chat_id)
+        send_main_menu(chat_id)
+        return
+
+    send_chat_action(chat_id, "upload_document")
+    send_message(chat_id, "⏳ در حال دانلود فایل PDF...")
+
+    uid = str(chat_id)
+    input_path = os.path.join(TEMP_DIR, f"{uid}_input.pdf")
+    output_dir = os.path.join(TEMP_DIR, f"{uid}_pdf2word_out")
+    os.makedirs(output_dir, exist_ok=True)
+
+    try:
+        download_file(document["file_id"], input_path)
+    except Exception as e:
+        print("خطا در دانلود PDF:", e)
+        send_message(chat_id, "❌ نتونستم فایل رو دانلود کنم.")
+        reset_state(chat_id)
+        send_main_menu(chat_id)
+        return
+
+    send_message(chat_id, "🔄 در حال تبدیل PDF به Word...\nممکنه ۱ تا ۲ دقیقه طول بکشه.")
+
+    # پروفایل جداگانه برای جلوگیری از تداخل با تبدیل‌های دیگه
+    profile_dir = f"/tmp/lo_profile_pdf2word_{uid}"
+    cmd = [
+        "soffice",
+        "--headless",
+        "--norestore",
+        f"-env:UserInstallation=file://{profile_dir}",
+        "--infilter=writer_pdf_import",
+        "--convert-to", "docx:MS Word 2007 XML",
+        "--outdir", output_dir,
+        input_path,
+    ]
+
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        print("LibreOffice PDF→DOCX stdout:", result.stdout)
+        print("LibreOffice PDF→DOCX stderr:", result.stderr)
+    except subprocess.TimeoutExpired:
+        send_message(chat_id, "⏰ پردازش خیلی طول کشید. فایل رو سبک‌تر کن یا صبح دوباره امتحان کن.")
+        _cleanup_pdf2word(input_path, output_dir)
+        reset_state(chat_id)
+        send_main_menu(chat_id)
+        return
+    except Exception as e:
+        print("خطا در اجرای LibreOffice:", e)
+        send_message(chat_id, "❌ مشکلی تو تبدیل پیش اومد.")
+        _cleanup_pdf2word(input_path, output_dir)
+        reset_state(chat_id)
+        send_main_menu(chat_id)
+        return
+
+    # پیدا کردن فایل خروجی
+    base_name = os.path.splitext(os.path.basename(input_path))[0]
+    output_docx = os.path.join(output_dir, base_name + ".docx")
+
+    if not os.path.exists(output_docx):
+        # گاهی LibreOffice اسم فایل رو کمی عوض می‌کنه
+        candidates = [f for f in os.listdir(output_dir) if f.endswith(".docx")]
+        if candidates:
+            output_docx = os.path.join(output_dir, candidates[0])
+        else:
+            send_message(
+                chat_id,
+                "❌ تبدیل انجام نشد.\n\n"
+                "ممکنه فایل PDF اسکن‌شده (تصویری) باشه — برای این نوع PDF باید OCR انجام بشه.\n"
+                "فقط PDF های متنی (که متنش قابل کپی‌ه) پشتیبانی می‌شن."
+            )
+            _cleanup_pdf2word(input_path, output_dir)
+            reset_state(chat_id)
+            send_main_menu(chat_id)
+            return
+
+    # بهبود فایل خروجی: اعمال RTL و فونت فارسی
+    try:
+        output_docx = _fix_docx_rtl(output_docx, output_dir)
+    except Exception as e:
+        print("خطا در بهبود DOCX (ادامه می‌دیم):", e)
+
+    # ارسال فایل
+    original_name = os.path.splitext(file_name)[0]
+    try:
+        url = f"{API_URL}/sendDocument"
+        with open(output_docx, "rb") as f:
+            resp = requests.post(
+                url,
+                data={
+                    "chat_id": chat_id,
+                    "caption": (
+                        "✅ <b>تبدیل PDF به Word انجام شد!</b>\n\n"
+                        "📌 اگر متن فارسی بهم ریخته بود:\n"
+                        "در Word: Layout → Text Direction → Right to Left"
+                    ),
+                    "parse_mode": "HTML",
+                },
+                files={"document": (f"{original_name}.docx", f, "application/vnd.openxmlformats-officedocument.wordprocessingml.document")},
+                timeout=60,
+            )
+        print("نتیجه ارسال DOCX:", resp.status_code)
+    except Exception as e:
+        print("خطا در ارسال DOCX:", e)
+        send_message(chat_id, "❌ فایل ساخته شد ولی نتونستم بفرستم. دوباره امتحان کن.")
+
+    _cleanup_pdf2word(input_path, output_dir)
+    reset_state(chat_id)
+    send_main_menu(chat_id, "🎉 تموم شد! کار دیگه‌ای هم مونده؟")
+
+
+def _fix_docx_rtl(docx_path: str, output_dir: str) -> str:
+    """
+    با python-docx فایل رو باز می‌کنه و:
+    - جهت پاراگراف‌ها رو RTL می‌کنه
+    - فونت B Nazanin رو ست می‌کنه
+    - خروجی رو در مسیر جدید ذخیره می‌کنه
+    """
+    try:
+        from docx import Document
+        from docx.oxml.ns import qn
+        from docx.oxml import OxmlElement
+        from docx.shared import Pt
+    except ImportError:
+        print("⚠️ python-docx نصب نیست — فایل بدون بهبود RTL ارسال می‌شه")
+        return docx_path
+
+    doc = Document(docx_path)
+
+    for para in doc.paragraphs:
+        # RTL برای پاراگراف
+        pPr = para._p.get_or_add_pPr()
+        bidi = OxmlElement("w:bidi")
+        bidi.set(qn("w:val"), "1")
+        # اگه bidi قبلاً نبوده اضافه می‌کنیم
+        existing = pPr.find(qn("w:bidi"))
+        if existing is None:
+            pPr.insert(0, bidi)
+
+        # جهت‌چینی راست
+        jc = pPr.find(qn("w:jc"))
+        if jc is None:
+            jc = OxmlElement("w:jc")
+            pPr.append(jc)
+        jc.set(qn("w:val"), "right")
+
+        # فونت و RTL برای run ها
+        for run in para.runs:
+            run.font.name = "B Nazanin"
+            # فونت عربی/فارسی در XML
+            rPr = run._r.get_or_add_rPr()
+            rFonts = rPr.find(qn("w:rFonts"))
+            if rFonts is None:
+                rFonts = OxmlElement("w:rFonts")
+                rPr.insert(0, rFonts)
+            rFonts.set(qn("w:cs"), "B Nazanin")
+            rFonts.set(qn("w:ascii"), "B Nazanin")
+            rFonts.set(qn("w:hAnsi"), "B Nazanin")
+
+            # RTL برای run
+            rtl_el = rPr.find(qn("w:rtl"))
+            if rtl_el is None:
+                rtl_el = OxmlElement("w:rtl")
+                rPr.append(rtl_el)
+            rtl_el.set(qn("w:val"), "1")
+
+    # جداول هم RTL بشن
+    for table in doc.tables:
+        tbl = table._tbl
+        tblPr = tbl.find(qn("w:tblPr"))
+        if tblPr is None:
+            tblPr = OxmlElement("w:tblPr")
+            tbl.insert(0, tblPr)
+        bidiVisual = tblPr.find(qn("w:bidiVisual"))
+        if bidiVisual is None:
+            bidiVisual = OxmlElement("w:bidiVisual")
+            tblPr.append(bidiVisual)
+        bidiVisual.set(qn("w:val"), "1")
+
+        for row in table.rows:
+            for cell in row.cells:
+                for para in cell.paragraphs:
+                    pPr = para._p.get_or_add_pPr()
+                    bidi = OxmlElement("w:bidi")
+                    bidi.set(qn("w:val"), "1")
+                    if pPr.find(qn("w:bidi")) is None:
+                        pPr.insert(0, bidi)
+                    for run in para.runs:
+                        run.font.name = "B Nazanin"
+
+    fixed_path = os.path.join(output_dir, "fixed_output.docx")
+    doc.save(fixed_path)
+    return fixed_path
+
+
+def _cleanup_pdf2word(input_path, output_dir):
+    """پاکسازی فایل‌های موقت"""
+    import shutil
+    if os.path.exists(input_path):
+        os.remove(input_path)
+    if os.path.exists(output_dir):
+        shutil.rmtree(output_dir, ignore_errors=True)
+
+
 # ------------------ مسیریابی پیام‌ها ------------------
 
 def handle_message(message):
@@ -873,6 +1110,8 @@ def handle_message(message):
             start_petty_cash(chat_id); return
         if text == MENU_WORD_TO_PDF:
             start_word_to_pdf(chat_id); return
+        if text == MENU_PDF_TO_WORD:
+            start_pdf_to_word(chat_id); return
 
     # حالت‌های در حال جمع‌آوری عکس
     if "photo" in message:
@@ -885,12 +1124,24 @@ def handle_message(message):
             send_main_menu(chat_id)
         return
 
-    # سند/فایل (برای قابلیت ورد به PDF)
+    # سند/فایل
     if "document" in message:
         if mode == "word_to_pdf":
             handle_word_document(chat_id, message)
+        elif mode == "pdf_to_word":
+            handle_pdf_to_word(chat_id, message)
         else:
-            send_message(chat_id, "لطفاً اول از منو گزینه «ورد به PDF» رو انتخاب کن 👇")
+            # تشخیص هوشمند: اگه PDF فرستاد پیشنهاد بده
+            mime = message["document"].get("mime_type", "")
+            fname = message["document"].get("file_name", "")
+            if mime == "application/pdf" or fname.lower().endswith(".pdf"):
+                send_message(
+                    chat_id,
+                    "📝 یه PDF فرستادی!\n"
+                    f"برای تبدیل به Word، از منو گزینه «{MENU_PDF_TO_WORD}» رو انتخاب کن 👇"
+                )
+            else:
+                send_message(chat_id, "لطفاً اول از منو گزینه «ورد به PDF» رو انتخاب کن 👇")
             send_main_menu(chat_id)
         return
 
